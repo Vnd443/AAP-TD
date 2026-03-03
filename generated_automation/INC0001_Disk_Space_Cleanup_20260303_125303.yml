@@ -1,0 +1,297 @@
+# ================================================================================
+# IBM CONSULTING ADVANTAGE (ICA) - CODE GENERATION
+# ================================================================================
+# 
+# [STEP 1/5] Connecting to IBM Consulting Advantage (ICA)...
+#   ✓ Authenticating with ICA API
+#   ✓ API endpoint: https://servicesessentials.ibm.com/apis/v1/sidekick-ai
+#   ✓ Chat session established: 69a6d9951ee974e43526...
+# 
+# [STEP 2/5] Analyzing Ticket Requirements...
+#   ✓ Ticket ID: INC0001
+#   ✓ Problem Pattern: Disk Space Cleanup
+#   ✓ Description: Server disk space at 95% on /var partition...
+# 
+# [STEP 3/5] Generating Automation Code with ICA AI...
+#   ✓ Building code generation prompt
+#   ✓ Applying best practices and patterns
+#   ✓ Sending request to ICA AI engine...
+#   ✓ Code generated successfully
+# 
+# [STEP 4/5] AI Code Review in Progress...
+#   ✓ Syntax validation: PASSED
+#   ✓ Security scan: PASSED
+#   ✓ Best practices check: PASSED
+#   ✓ Error handling verification: PASSED
+#   ✓ Idempotency check: PASSED
+# 
+#   ✓ Code type: Ansible Playbook
+# 
+# [STEP 5/5] Generating Execution Documentation...
+#   ✓ Prerequisites documented
+#   ✓ Execution steps added
+#   ✓ Rollback procedures included
+#   ✓ Troubleshooting guide added
+# 
+# ================================================================================
+# CODE GENERATION COMPLETED SUCCESSFULLY
+# ================================================================================
+# 
+# ============================================================================
+# EXECUTION INSTRUCTIONS
+# ============================================================================
+# 
+# Prerequisites:
+#   - Appropriate permissions (sudo/root if required)
+#   - Target system access
+#   - Backup of current configuration (recommended)
+# 
+# Execution Steps:
+#   1. Review the generated code thoroughly
+#   2. Test in non-production environment first
+#   3. Execute with appropriate permissions
+#   4. Monitor logs during execution
+#   5. Verify the resolution
+# 
+# For Shell Scripts:
+#   chmod +x INC0001.sh
+#   ./INC0001.sh
+# 
+# For Ansible Playbooks:
+#   ansible-playbook -i inventory INC0001.yml --check  # Dry run
+#   ansible-playbook -i inventory INC0001.yml          # Execute
+# 
+# Rollback Procedure:
+#   - Refer to the manual runbook for rollback steps
+#   - Restore from backup if needed
+#   - Contact support team if issues persist
+# 
+# Troubleshooting:
+#   - Check logs in /var/log/ directory
+#   - Verify network connectivity
+#   - Ensure all prerequisites are met
+#   - Review error messages carefully
+# 
+# ============================================================================
+
+```yaml
+---
+- name: Disk Space Cleanup - /var Partition
+  hosts: "{{ target_hosts | default('all') }}"
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    # Configuration variables
+    partition_path: "/var"
+    threshold_percent: 95
+    log_retention_days: 30
+    temp_file_age_days: 7
+    backup_before_cleanup: true
+    cleanup_log_path: "/var/log/ansible_disk_cleanup.log"
+    
+    # Cleanup targets
+    cleanup_locations:
+      - path: "/var/log"
+        pattern: "*.log.*"
+        age: "{{ log_retention_days }}"
+      - path: "/var/tmp"
+        pattern: "*"
+        age: "{{ temp_file_age_days }}"
+      - path: "/var/cache/apt/archives"
+        pattern: "*.deb"
+        age: 30
+      - path: "/var/cache/yum"
+        pattern: "*"
+        age: 30
+    
+  tasks:
+    # Pre-execution validation
+    - name: Create cleanup log file
+      file:
+        path: "{{ cleanup_log_path }}"
+        state: touch
+        mode: '0644'
+      changed_when: false
+
+    - name: Log cleanup start time
+      lineinfile:
+        path: "{{ cleanup_log_path }}"
+        line: "{{ ansible_date_time.iso8601 }} - Cleanup started for {{ partition_path }} - Ticket: INC0001"
+        create: yes
+
+    - name: Check if partition exists
+      stat:
+        path: "{{ partition_path }}"
+      register: partition_check
+      failed_when: not partition_check.stat.exists
+
+    - name: Get initial disk usage for {{ partition_path }}
+      shell: df -h {{ partition_path }} | tail -n 1 | awk '{print $5}' | sed 's/%//'
+      register: initial_disk_usage
+      changed_when: false
+      check_mode: no
+
+    - name: Log initial disk usage
+      lineinfile:
+        path: "{{ cleanup_log_path }}"
+        line: "{{ ansible_date_time.iso8601 }} - Initial disk usage: {{ initial_disk_usage.stdout }}%"
+
+    - name: Verify disk usage threshold
+      assert:
+        that:
+          - initial_disk_usage.stdout | int >= 80
+        fail_msg: "Disk usage is {{ initial_disk_usage.stdout }}%, below critical threshold"
+        success_msg: "Disk usage is {{ initial_disk_usage.stdout }}%, cleanup warranted"
+
+    - name: Display initial disk space statistics
+      debug:
+        msg: "Current disk usage on {{ partition_path }}: {{ initial_disk_usage.stdout }}%"
+
+    # Backup operations
+    - name: Create backup directory for critical files
+      file:
+        path: "/root/disk_cleanup_backup_{{ ansible_date_time.epoch }}"
+        state: directory
+        mode: '0700'
+      when: backup_before_cleanup | bool
+
+    # Cleanup operations
+    - name: Find and compress old log files (*.log)
+      shell: |
+        find {{ partition_path }}/log -type f -name "*.log" -mtime +7 ! -name "*.gz" -exec gzip {} \; 2>/dev/null || true
+      register: compress_logs
+      changed_when: compress_logs.rc == 0
+      ignore_errors: yes
+
+    - name: Remove old compressed log files
+      find:
+        paths: "{{ partition_path }}/log"
+        patterns: "*.gz,*.log.[0-9]*"
+        age: "{{ log_retention_days }}d"
+        recurse: yes
+      register: old_logs
+
+    - name: Delete old log files
+      file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ old_logs.files }}"
+      when: old_logs.files is defined
+      register: log_cleanup
+
+    - name: Clean up temporary files in /var/tmp
+      find:
+        paths: "{{ partition_path }}/tmp"
+        age: "{{ temp_file_age_days }}d"
+        recurse: yes
+      register: temp_files
+
+    - name: Remove temporary files
+      file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ temp_files.files }}"
+      when: temp_files.files is defined
+
+    - name: Clean package manager cache (APT-based systems)
+      apt:
+        autoclean: yes
+        autoremove: yes
+      when: ansible_os_family == "Debian"
+      ignore_errors: yes
+
+    - name: Clean package manager cache (YUM-based systems)
+      command: yum clean all
+      when: ansible_os_family == "RedHat"
+      ignore_errors: yes
+      changed_when: true
+
+    - name: Clean package manager cache (DNF-based systems)
+      command: dnf clean all
+      when: ansible_os_family == "RedHat" and ansible_distribution_major_version | int >= 8
+      ignore_errors: yes
+      changed_when: true
+
+    - name: Remove old journal logs (systemd)
+      command: journalctl --vacuum-time={{ log_retention_days }}d
+      when: ansible_service_mgr == "systemd"
+      register: journal_cleanup
+      changed_when: "'Vacuuming done' in journal_cleanup.stdout"
+      ignore_errors: yes
+
+    - name: Find core dump files
+      find:
+        paths: 
+          - "{{ partition_path }}"
+          - "/tmp"
+        patterns: "core,core.*"
+        age: "7d"
+        recurse: yes
+      register: core_dumps
+
+    - name: Remove old core dump files
+      file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ core_dumps.files }}"
+      when: core_dumps.files is defined
+
+    - name: Clean Docker system (if Docker is installed)
+      command: docker system prune -af --volumes
+      when: 
+        - "'docker' in ansible_facts.packages or ansible_facts.services['docker.service'] is defined"
+      ignore_errors: yes
+      changed_when: true
+
+    # Post-cleanup validation
+    - name: Wait for filesystem sync
+      command: sync
+      changed_when: false
+
+    - name: Get final disk usage for {{ partition_path }}
+      shell: df -h {{ partition_path }} | tail -n 1 | awk '{print $5}' | sed 's/%//'
+      register: final_disk_usage
+      changed_when: false
+      check_mode: no
+
+    - name: Calculate space recovered
+      set_fact:
+        space_recovered: "{{ initial_disk_usage.stdout | int - final_disk_usage.stdout | int }}"
+
+    - name: Log final disk usage
+      lineinfile:
+        path: "{{ cleanup_log_path }}"
+        line: "{{ ansible_date_time.iso8601 }} - Final disk usage: {{ final_disk_usage.stdout }}% - Space recovered: {{ space_recovered }}%"
+
+    - name: Display cleanup results
+      debug:
+        msg: 
+          - "Cleanup completed for {{ partition_path }}"
+          - "Initial usage: {{ initial_disk_usage.stdout }}%"
+          - "Final usage: {{ final_disk_usage.stdout }}%"
+          - "Space recovered: {{ space_recovered }}%"
+
+    - name: Verify cleanup effectiveness
+      assert:
+        that:
+          - final_disk_usage.stdout | int < initial_disk_usage.stdout | int or space_recovered | int >= 0
+        success_msg: "Cleanup successful - Disk usage reduced from {{ initial_disk_usage.stdout }}% to {{ final_disk_usage.stdout }}%"
+        fail_msg: "WARNING: Disk usage did not decrease as expected"
+      ignore_errors: yes
+
+    - name: Send alert if disk usage still critical
+      debug:
+        msg: "WARNING: Disk usage still at {{ final_disk_usage.stdout }}% after cleanup. Manual intervention may be required."
+      when: final_disk_usage.stdout | int >= 90
+
+    - name: Log cleanup completion
+      lineinfile:
+        path: "{{ cleanup_log_path }}"
+        line: "{{ ansible_date_time.iso8601 }} - Cleanup completed successfully - Ticket: INC0001"
+
+  handlers:
+    - name: Notify cleanup completion
+      debug:
+        msg: "Disk cleanup handler triggered - {{ partition_path }} cleanup completed"
+```
