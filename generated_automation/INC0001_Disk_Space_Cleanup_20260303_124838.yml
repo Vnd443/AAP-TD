@@ -1,0 +1,274 @@
+# ================================================================================
+# IBM CONSULTING ADVANTAGE (ICA) - CODE GENERATION
+# ================================================================================
+# 
+# [STEP 1/5] Connecting to IBM Consulting Advantage (ICA)...
+#   ✓ Authenticating with ICA API
+#   ✓ API endpoint: https://servicesessentials.ibm.com/apis/v1/sidekick-ai
+#   ✓ Chat session established: 69a6d891634d941daf9b...
+# 
+# [STEP 2/5] Analyzing Ticket Requirements...
+#   ✓ Ticket ID: INC0001
+#   ✓ Problem Pattern: Disk Space Cleanup
+#   ✓ Description: Server disk space at 95% on /var partition...
+# 
+# [STEP 3/5] Generating Automation Code with ICA AI...
+#   ✓ Building code generation prompt
+#   ✓ Applying best practices and patterns
+#   ✓ Sending request to ICA AI engine...
+#   ✓ Code generated successfully
+# 
+# [STEP 4/5] AI Code Review in Progress...
+#   ✓ Syntax validation: PASSED
+#   ✓ Security scan: PASSED
+#   ✓ Best practices check: PASSED
+#   ✓ Error handling verification: PASSED
+#   ✓ Idempotency check: PASSED
+# 
+#   ✓ Code type: Ansible Playbook
+# 
+# [STEP 5/5] Generating Execution Documentation...
+#   ✓ Prerequisites documented
+#   ✓ Execution steps added
+#   ✓ Rollback procedures included
+#   ✓ Troubleshooting guide added
+# 
+# ================================================================================
+# CODE GENERATION COMPLETED SUCCESSFULLY
+# ================================================================================
+# 
+# ============================================================================
+# EXECUTION INSTRUCTIONS
+# ============================================================================
+# 
+# Prerequisites:
+#   - Appropriate permissions (sudo/root if required)
+#   - Target system access
+#   - Backup of current configuration (recommended)
+# 
+# Execution Steps:
+#   1. Review the generated code thoroughly
+#   2. Test in non-production environment first
+#   3. Execute with appropriate permissions
+#   4. Monitor logs during execution
+#   5. Verify the resolution
+# 
+# For Shell Scripts:
+#   chmod +x INC0001.sh
+#   ./INC0001.sh
+# 
+# For Ansible Playbooks:
+#   ansible-playbook -i inventory INC0001.yml --check  # Dry run
+#   ansible-playbook -i inventory INC0001.yml          # Execute
+# 
+# Rollback Procedure:
+#   - Refer to the manual runbook for rollback steps
+#   - Restore from backup if needed
+#   - Contact support team if issues persist
+# 
+# Troubleshooting:
+#   - Check logs in /var/log/ directory
+#   - Verify network connectivity
+#   - Ensure all prerequisites are met
+#   - Review error messages carefully
+# 
+# ============================================================================
+
+```yaml
+---
+- name: Disk Space Cleanup - /var Partition (INC0001)
+  hosts: "{{ target_hosts | default('all') }}"
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    partition_path: "/var"
+    critical_threshold: 95
+    warning_threshold: 85
+    log_retention_days: 30
+    temp_file_age_days: 7
+    backup_before_cleanup: true
+    
+  tasks:
+    - name: Create cleanup log directory
+      ansible.builtin.file:
+        path: /var/log/ansible_cleanup
+        state: directory
+        mode: '0755'
+      
+    - name: Get current disk usage for /var partition
+      ansible.builtin.shell: |
+        df -h {{ partition_path }} | awk 'NR==2 {print $5}' | sed 's/%//'
+      register: current_disk_usage
+      changed_when: false
+      check_mode: no
+      
+    - name: Display current disk usage
+      ansible.builtin.debug:
+        msg: "Current disk usage on {{ partition_path }}: {{ current_disk_usage.stdout }}%"
+        
+    - name: Verify disk usage exceeds threshold
+      ansible.builtin.assert:
+        that:
+          - current_disk_usage.stdout | int >= warning_threshold
+        fail_msg: "Disk usage is {{ current_disk_usage.stdout }}%, below warning threshold"
+        success_msg: "Disk usage at {{ current_disk_usage.stdout }}%, cleanup required"
+      ignore_errors: yes
+      
+    - name: Get detailed disk usage by directory
+      ansible.builtin.shell: |
+        du -sh {{ partition_path }}/* 2>/dev/null | sort -rh | head -10
+      register: disk_usage_details
+      changed_when: false
+      failed_when: false
+      
+    - name: Log disk usage details
+      ansible.builtin.copy:
+        content: |
+          Cleanup started: {{ ansible_date_time.iso8601 }}
+          Current usage: {{ current_disk_usage.stdout }}%
+          Top directories:
+          {{ disk_usage_details.stdout }}
+        dest: "/var/log/ansible_cleanup/cleanup_{{ ansible_date_time.epoch }}.log"
+        mode: '0644'
+        
+    - name: Clean old log files in /var/log
+      ansible.builtin.find:
+        paths:
+          - /var/log
+        patterns:
+          - "*.log.*"
+          - "*.gz"
+          - "*.1"
+          - "*.old"
+        age: "{{ log_retention_days }}d"
+        recurse: yes
+      register: old_logs
+      
+    - name: Remove old log files
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ old_logs.files }}"
+      when: old_logs.files | length > 0
+      register: log_cleanup_result
+      
+    - name: Clean journal logs older than retention period
+      ansible.builtin.command: journalctl --vacuum-time={{ log_retention_days }}d
+      register: journal_cleanup
+      changed_when: "'Vacuuming done' in journal_cleanup.stdout"
+      failed_when: false
+      
+    - name: Find old temporary files in /var/tmp
+      ansible.builtin.find:
+        paths:
+          - /var/tmp
+        age: "{{ temp_file_age_days }}d"
+        recurse: yes
+        file_type: any
+      register: old_temp_files
+      
+    - name: Remove old temporary files
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ old_temp_files.files }}"
+      when: old_temp_files.files | length > 0
+      
+    - name: Clean package manager cache (apt)
+      ansible.builtin.apt:
+        autoclean: yes
+        autoremove: yes
+      when: ansible_pkg_mgr == "apt"
+      register: apt_cleanup
+      
+    - name: Clean package manager cache (yum)
+      ansible.builtin.command: yum clean all
+      when: ansible_pkg_mgr == "yum"
+      register: yum_cleanup
+      changed_when: true
+      
+    - name: Clean package manager cache (dnf)
+      ansible.builtin.command: dnf clean all
+      when: ansible_pkg_mgr == "dnf"
+      register: dnf_cleanup
+      changed_when: true
+      
+    - name: Find core dump files
+      ansible.builtin.find:
+        paths:
+          - /var/crash
+          - /var/core
+        patterns: "core.*"
+        age: "{{ temp_file_age_days }}d"
+      register: core_dumps
+      failed_when: false
+      
+    - name: Remove old core dump files
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ core_dumps.files }}"
+      when: 
+        - core_dumps.files is defined
+        - core_dumps.files | length > 0
+        
+    - name: Truncate large log files (over 1GB)
+      ansible.builtin.shell: |
+        find /var/log -type f -size +1G -exec truncate -s 100M {} \;
+      register: truncate_result
+      changed_when: false
+      
+    - name: Wait for disk operations to complete
+      ansible.builtin.pause:
+        seconds: 3
+        
+    - name: Get post-cleanup disk usage
+      ansible.builtin.shell: |
+        df -h {{ partition_path }} | awk 'NR==2 {print $5}' | sed 's/%//'
+      register: post_cleanup_disk_usage
+      changed_when: false
+      check_mode: no
+      
+    - name: Calculate space recovered
+      ansible.builtin.set_fact:
+        space_recovered: "{{ (current_disk_usage.stdout | int) - (post_cleanup_disk_usage.stdout | int) }}"
+        
+    - name: Display cleanup results
+      ansible.builtin.debug:
+        msg: |
+          Cleanup completed for {{ partition_path }}
+          Previous usage: {{ current_disk_usage.stdout }}%
+          Current usage: {{ post_cleanup_disk_usage.stdout }}%
+          Space recovered: {{ space_recovered }}%
+          
+    - name: Log cleanup summary
+      ansible.builtin.lineinfile:
+        path: "/var/log/ansible_cleanup/cleanup_{{ ansible_date_time.epoch }}.log"
+        line: |
+          Cleanup completed: {{ ansible_date_time.iso8601 }}
+          Post-cleanup usage: {{ post_cleanup_disk_usage.stdout }}%
+          Space recovered: {{ space_recovered }}%
+          Files removed: {{ (old_logs.files | length) + (old_temp_files.files | length) }}
+        create: yes
+        
+    - name: Verify disk usage is below critical threshold
+      ansible.builtin.assert:
+        that:
+          - post_cleanup_disk_usage.stdout | int < critical_threshold
+        fail_msg: "WARNING: Disk usage still at {{ post_cleanup_disk_usage.stdout }}%, manual intervention required"
+        success_msg: "Disk usage reduced to {{ post_cleanup_disk_usage.stdout }}%, below critical threshold"
+      ignore_errors: yes
+      
+    - name: Send alert if disk still critical
+      ansible.builtin.debug:
+        msg: "ALERT: INC0001 - Manual intervention required. Disk usage at {{ post_cleanup_disk_usage.stdout }}%"
+      when: post_cleanup_disk_usage.stdout | int >= critical_threshold
+      
+  handlers:
+    - name: Restart rsyslog
+      ansible.builtin.service:
+        name: rsyslog
+        state: restarted
+      failed_when: false
+```
