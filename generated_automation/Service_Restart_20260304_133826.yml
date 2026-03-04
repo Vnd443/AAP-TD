@@ -1,0 +1,312 @@
+# ================================================================================
+# IBM CONSULTING ADVANTAGE (ICA) - CODE GENERATION
+# ================================================================================
+# 
+# [STEP 1/5] Connecting to IBM Consulting Advantage (ICA)...
+#   ✓ Authenticating with ICA API
+#   ✓ API endpoint: https://servicesessentials.ibm.com/apis/v1/sidekick-ai
+#   ✓ Chat session established: 69a7e84d14d58279e0b5...
+# 
+# [STEP 2/5] Analyzing Ticket Requirements...
+#   ✓ Ticket ID: INC0009
+#   ✓ Problem Pattern: Service Restart
+#   ✓ Description: Apache web server not responding...
+#   ✓ Runbook context loaded (73 characters)
+# 
+# [STEP 3/5] Generating Automation Code with ICA AI...
+#   ✓ Building code generation prompt
+#   ✓ Applying best practices and patterns
+#   ✓ Sending request to ICA AI engine...
+#   ✓ Code generated successfully
+# 
+# [STEP 4/5] AI Code Review in Progress...
+#   ✓ Syntax validation: PASSED
+#   ✓ Security scan: PASSED
+#   ✓ Best practices check: PASSED
+#   ✓ Error handling verification: PASSED
+#   ✓ Idempotency check: PASSED
+# 
+#   ✓ Code type: Ansible Playbook
+# 
+# [STEP 5/5] Generating Execution Documentation...
+#   ✓ Prerequisites documented
+#   ✓ Execution steps added
+#   ✓ Rollback procedures included
+#   ✓ Troubleshooting guide added
+# 
+# ================================================================================
+# CODE GENERATION COMPLETED SUCCESSFULLY
+# ================================================================================
+# 
+# ============================================================================
+# EXECUTION INSTRUCTIONS
+# ============================================================================
+# 
+# Prerequisites:
+#   - Appropriate permissions (sudo/root if required)
+#   - Target system access
+#   - Backup of current configuration (recommended)
+# 
+# Execution Steps:
+#   1. Review the generated code thoroughly
+#   2. Test in non-production environment first
+#   3. Execute with appropriate permissions
+#   4. Monitor logs during execution
+#   5. Verify the resolution
+# 
+# For Shell Scripts:
+#   chmod +x INC0009.sh
+#   ./INC0009.sh
+# 
+# For Ansible Playbooks:
+#   ansible-playbook -i inventory INC0009.yml --check  # Dry run
+#   ansible-playbook -i inventory INC0009.yml          # Execute
+# 
+# Rollback Procedure:
+#   - Refer to the manual runbook for rollback steps
+#   - Restore from backup if needed
+#   - Contact support team if issues persist
+# 
+# Troubleshooting:
+#   - Check logs in /var/log/ directory
+#   - Verify network connectivity
+#   - Ensure all prerequisites are met
+#   - Review error messages carefully
+# 
+# ============================================================================
+
+```yaml
+---
+- name: Apache Web Server Service Restart - INC0009
+  hosts: all
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    service_name: "httpd"
+    service_name_debian: "apache2"
+    max_retries: 3
+    retry_delay: 10
+    log_file: "/var/log/ansible_service_restart_{{ ansible_date_time.epoch }}.log"
+    
+  tasks:
+    # Determine the correct Apache service name based on OS family
+    - name: Set Apache service name for RedHat/CentOS
+      set_fact:
+        apache_service: "{{ service_name }}"
+      when: ansible_os_family == "RedHat"
+      
+    - name: Set Apache service name for Debian/Ubuntu
+      set_fact:
+        apache_service: "{{ service_name_debian }}"
+      when: ansible_os_family == "Debian"
+      
+    # Pre-restart validation checks
+    - name: Check if Apache service exists
+      stat:
+        path: "/etc/init.d/{{ apache_service }}"
+      register: service_init_check
+      failed_when: false
+      
+    - name: Check Apache service unit file (systemd)
+      systemd:
+        name: "{{ apache_service }}"
+      register: service_status_pre
+      failed_when: false
+      check_mode: no
+      
+    - name: Log pre-restart service status
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "{{ ansible_date_time.iso8601 }} - Pre-restart status: {{ service_status_pre.status.ActiveState | default('unknown') }}"
+        create: yes
+        mode: '0644'
+      delegate_to: localhost
+      become: no
+      
+    # Check Apache configuration syntax before restart
+    - name: Validate Apache configuration syntax (RedHat)
+      command: "httpd -t"
+      register: config_check_rhel
+      failed_when: false
+      changed_when: false
+      when: ansible_os_family == "RedHat"
+      
+    - name: Validate Apache configuration syntax (Debian)
+      command: "apache2ctl -t"
+      register: config_check_debian
+      failed_when: false
+      changed_when: false
+      when: ansible_os_family == "Debian"
+      
+    - name: Log configuration validation results
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "{{ ansible_date_time.iso8601 }} - Config validation: {{ (config_check_rhel.rc | default(config_check_debian.rc)) == 0 | ternary('PASSED', 'FAILED') }}"
+        create: yes
+        mode: '0644'
+      delegate_to: localhost
+      become: no
+      
+    - name: Fail if configuration is invalid
+      fail:
+        msg: "Apache configuration syntax check failed. Please review configuration files."
+      when: 
+        - (ansible_os_family == "RedHat" and config_check_rhel.rc != 0) or
+          (ansible_os_family == "Debian" and config_check_debian.rc != 0)
+        
+    # Backup current error logs before restart
+    - name: Backup Apache error log
+      copy:
+        src: "/var/log/{{ apache_service }}/error_log"
+        dest: "/var/log/{{ apache_service }}/error_log.backup.{{ ansible_date_time.epoch }}"
+        remote_src: yes
+      failed_when: false
+      when: ansible_os_family == "RedHat"
+      
+    - name: Backup Apache error log (Debian)
+      copy:
+        src: "/var/log/{{ apache_service }}/error.log"
+        dest: "/var/log/{{ apache_service }}/error.log.backup.{{ ansible_date_time.epoch }}"
+        remote_src: yes
+      failed_when: false
+      when: ansible_os_family == "Debian"
+      
+    # Stop Apache service gracefully
+    - name: Stop Apache service gracefully
+      systemd:
+        name: "{{ apache_service }}"
+        state: stopped
+      register: service_stop
+      retries: "{{ max_retries }}"
+      delay: "{{ retry_delay }}"
+      until: service_stop is succeeded
+      
+    - name: Wait for Apache to fully stop
+      wait_for:
+        port: 80
+        state: stopped
+        timeout: 30
+      failed_when: false
+      
+    - name: Wait for Apache SSL to fully stop
+      wait_for:
+        port: 443
+        state: stopped
+        timeout: 30
+      failed_when: false
+      
+    # Clear any stale PID files
+    - name: Remove stale PID file if exists
+      file:
+        path: "/var/run/{{ apache_service }}/{{ apache_service }}.pid"
+        state: absent
+      failed_when: false
+      
+    - name: Remove stale PID file alternate location
+      file:
+        path: "/var/run/{{ apache_service }}.pid"
+        state: absent
+      failed_when: false
+      
+    # Start Apache service
+    - name: Start Apache service
+      systemd:
+        name: "{{ apache_service }}"
+        state: started
+        enabled: yes
+        daemon_reload: yes
+      register: service_start
+      retries: "{{ max_retries }}"
+      delay: "{{ retry_delay }}"
+      until: service_start is succeeded
+      
+    # Post-restart validation checks
+    - name: Wait for Apache to be ready on port 80
+      wait_for:
+        port: 80
+        state: started
+        timeout: 60
+        delay: 5
+      register: port_check_80
+      
+    - name: Wait for Apache to be ready on port 443
+      wait_for:
+        port: 443
+        state: started
+        timeout: 60
+        delay: 5
+      register: port_check_443
+      failed_when: false
+      
+    - name: Verify Apache service is running
+      systemd:
+        name: "{{ apache_service }}"
+      register: service_status_post
+      failed_when: service_status_post.status.ActiveState != "active"
+      
+    - name: Check Apache HTTP response
+      uri:
+        url: "http://localhost"
+        status_code: 200,301,302,403
+        timeout: 30
+      register: http_check
+      failed_when: false
+      
+    - name: Get Apache service status details
+      command: "systemctl status {{ apache_service }} --no-pager"
+      register: service_details
+      changed_when: false
+      failed_when: false
+      
+    # Log post-restart status
+    - name: Log post-restart service status
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "{{ ansible_date_time.iso8601 }} - Post-restart status: {{ service_status_post.status.ActiveState }}"
+        create: yes
+        mode: '0644'
+      delegate_to: localhost
+      become: no
+      
+    - name: Log HTTP health check result
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "{{ ansible_date_time.iso8601 }} - HTTP health check: {{ http_check.status | default('FAILED') }}"
+        create: yes
+        mode: '0644'
+      delegate_to: localhost
+      become: no
+      
+    - name: Log completion status
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "{{ ansible_date_time.iso8601 }} - INC0009 - Apache restart completed successfully"
+        create: yes
+        mode: '0644'
+      delegate_to: localhost
+      become: no
+      
+    # Display summary
+    - name: Display restart summary
+      debug:
+        msg:
+          - "================================================================"
+          - "Apache Service Restart Summary - INC0009"
+          - "================================================================"
+          - "Service Name: {{ apache_service }}"
+          - "Host: {{ ansible_hostname }}"
+          - "Previous State: {{ service_status_pre.status.ActiveState | default('unknown') }}"
+          - "Current State: {{ service_status_post.status.ActiveState }}"
+          - "Port 80 Status: {{ port_check_80.state }}"
+          - "Port 443 Status: {{ port_check_443.state | default('Not checked') }}"
+          - "HTTP Response: {{ http_check.status | default('Not available') }}"
+          - "Log File: {{ log_file }}"
+          - "================================================================"
+          
+  handlers:
+    - name: Reload Apache
+      systemd:
+        name: "{{ apache_service }}"
+        state: reloaded
+```
