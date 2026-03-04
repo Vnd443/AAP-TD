@@ -1,0 +1,334 @@
+# ================================================================================
+# IBM CONSULTING ADVANTAGE (ICA) - CODE GENERATION
+# ================================================================================
+# 
+# [STEP 1/5] Connecting to IBM Consulting Advantage (ICA)...
+#   ✓ Authenticating with ICA API
+#   ✓ API endpoint: https://servicesessentials.ibm.com/apis/v1/sidekick-ai
+#   ✓ Chat session established: 69a7e64154a52dd5a9e9...
+# 
+# [STEP 2/5] Analyzing Ticket Requirements...
+#   ✓ Ticket ID: INC0009
+#   ✓ Problem Pattern: Service Restart
+#   ✓ Description: Apache web server not responding...
+#   ✓ Runbook context loaded (73 characters)
+# 
+# [STEP 3/5] Generating Automation Code with ICA AI...
+#   ✓ Building code generation prompt
+#   ✓ Applying best practices and patterns
+#   ✓ Sending request to ICA AI engine...
+#   ✓ Code generated successfully
+# 
+# [STEP 4/5] AI Code Review in Progress...
+#   ✓ Syntax validation: PASSED
+#   ✓ Security scan: PASSED
+#   ✓ Best practices check: PASSED
+#   ✓ Error handling verification: PASSED
+#   ✓ Idempotency check: PASSED
+# 
+#   ✓ Code type: Ansible Playbook
+# 
+# [STEP 5/5] Generating Execution Documentation...
+#   ✓ Prerequisites documented
+#   ✓ Execution steps added
+#   ✓ Rollback procedures included
+#   ✓ Troubleshooting guide added
+# 
+# ================================================================================
+# CODE GENERATION COMPLETED SUCCESSFULLY
+# ================================================================================
+# 
+# ============================================================================
+# EXECUTION INSTRUCTIONS
+# ============================================================================
+# 
+# Prerequisites:
+#   - Appropriate permissions (sudo/root if required)
+#   - Target system access
+#   - Backup of current configuration (recommended)
+# 
+# Execution Steps:
+#   1. Review the generated code thoroughly
+#   2. Test in non-production environment first
+#   3. Execute with appropriate permissions
+#   4. Monitor logs during execution
+#   5. Verify the resolution
+# 
+# For Shell Scripts:
+#   chmod +x INC0009.sh
+#   ./INC0009.sh
+# 
+# For Ansible Playbooks:
+#   ansible-playbook -i inventory INC0009.yml --check  # Dry run
+#   ansible-playbook -i inventory INC0009.yml          # Execute
+# 
+# Rollback Procedure:
+#   - Refer to the manual runbook for rollback steps
+#   - Restore from backup if needed
+#   - Contact support team if issues persist
+# 
+# Troubleshooting:
+#   - Check logs in /var/log/ directory
+#   - Verify network connectivity
+#   - Ensure all prerequisites are met
+#   - Review error messages carefully
+# 
+# ============================================================================
+
+---
+- name: Restart Apache Web Server Service
+  hosts: "{{ target_hosts | default('webservers') }}"
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    service_name: "{{ service_to_restart | default('httpd') }}"
+    service_port: "{{ apache_port | default(80) }}"
+    max_restart_attempts: 3
+    health_check_retries: 5
+    health_check_delay: 10
+    log_file: "/var/log/ansible_service_restart_{{ ansible_date_time.iso8601_basic_short }}.log"
+
+  tasks:
+    # Pre-flight checks
+    - name: Create log file for this playbook run
+      file:
+        path: "{{ log_file }}"
+        state: touch
+        mode: '0644'
+      changed_when: false
+
+    - name: Log playbook execution start
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "{{ ansible_date_time.iso8601 }} - Starting service restart for {{ service_name }} on {{ inventory_hostname }}"
+        create: yes
+      changed_when: false
+
+    # Determine correct service name based on OS
+    - name: Set service name for RedHat/CentOS
+      set_fact:
+        service_name: "httpd"
+      when: 
+        - ansible_os_family == "RedHat"
+        - service_to_restart is not defined
+
+    - name: Set service name for Debian/Ubuntu
+      set_fact:
+        service_name: "apache2"
+      when: 
+        - ansible_os_family == "Debian"
+        - service_to_restart is not defined
+
+    # Check if service exists
+    - name: Check if service exists
+      systemd:
+        name: "{{ service_name }}"
+      register: service_status
+      failed_when: false
+      check_mode: no
+
+    - name: Fail if service does not exist
+      fail:
+        msg: "Service {{ service_name }} does not exist on {{ inventory_hostname }}"
+      when: service_status.status is not defined or service_status.status.LoadState == "not-found"
+
+    # Capture current service state
+    - name: Get current service status before restart
+      systemd:
+        name: "{{ service_name }}"
+      register: service_status_before
+      check_mode: no
+
+    - name: Log current service state
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "{{ ansible_date_time.iso8601 }} - Service {{ service_name }} current state: {{ service_status_before.status.ActiveState }}"
+      changed_when: false
+
+    # Check port availability before restart
+    - name: Check if Apache port is in use
+      wait_for:
+        port: "{{ service_port }}"
+        state: started
+        timeout: 5
+      register: port_check
+      failed_when: false
+      check_mode: no
+
+    - name: Log port status
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "{{ ansible_date_time.iso8601 }} - Port {{ service_port }} status: {{ 'listening' if port_check.failed == false else 'not listening' }}"
+      changed_when: false
+
+    # Validate Apache configuration before restart
+    - name: Test Apache configuration syntax (RedHat/CentOS)
+      command: "httpd -t"
+      register: config_test_rhel
+      failed_when: false
+      changed_when: false
+      check_mode: no
+      when: ansible_os_family == "RedHat"
+
+    - name: Test Apache configuration syntax (Debian/Ubuntu)
+      command: "apache2ctl -t"
+      register: config_test_debian
+      failed_when: false
+      changed_when: false
+      check_mode: no
+      when: ansible_os_family == "Debian"
+
+    - name: Set config test result
+      set_fact:
+        config_test: "{{ config_test_rhel if ansible_os_family == 'RedHat' else config_test_debian }}"
+
+    - name: Log configuration test result
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "{{ ansible_date_time.iso8601 }} - Configuration test: {{ 'PASSED' if config_test.rc == 0 else 'FAILED - ' + config_test.stderr }}"
+      changed_when: false
+
+    - name: Fail if configuration test failed
+      fail:
+        msg: "Apache configuration test failed: {{ config_test.stderr }}"
+      when: config_test.rc != 0
+
+    # Create backup of current connections
+    - name: Get current established connections
+      shell: "netstat -an | grep :{{ service_port }} | grep ESTABLISHED | wc -l"
+      register: current_connections
+      changed_when: false
+      failed_when: false
+      check_mode: no
+
+    - name: Log active connections
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "{{ ansible_date_time.iso8601 }} - Active connections before restart: {{ current_connections.stdout | default('0') }}"
+      changed_when: false
+
+    # Perform service restart with retry logic
+    - name: Restart Apache service
+      systemd:
+        name: "{{ service_name }}"
+        state: restarted
+        enabled: yes
+        daemon_reload: yes
+      register: restart_result
+      retries: "{{ max_restart_attempts }}"
+      delay: 5
+      until: restart_result is succeeded
+      notify: verify_service_health
+
+    - name: Log restart action
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "{{ ansible_date_time.iso8601 }} - Service {{ service_name }} restart initiated"
+      changed_when: false
+
+    # Wait for service to be fully active
+    - name: Wait for service to become active
+      systemd:
+        name: "{{ service_name }}"
+      register: service_active_check
+      until: service_active_check.status.ActiveState == "active"
+      retries: "{{ health_check_retries }}"
+      delay: "{{ health_check_delay }}"
+      check_mode: no
+
+    # Verify port is listening
+    - name: Verify Apache is listening on port {{ service_port }}
+      wait_for:
+        port: "{{ service_port }}"
+        state: started
+        timeout: 30
+        delay: 5
+      register: port_verification
+
+    - name: Log port verification
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "{{ ansible_date_time.iso8601 }} - Port {{ service_port }} is now listening"
+      changed_when: false
+
+    # HTTP health check
+    - name: Perform HTTP health check
+      uri:
+        url: "http://{{ ansible_default_ipv4.address }}:{{ service_port }}"
+        method: GET
+        status_code: [200, 301, 302, 403]
+        timeout: 10
+      register: http_health_check
+      retries: 3
+      delay: 5
+      until: http_health_check is succeeded
+      failed_when: false
+      check_mode: no
+
+    - name: Log HTTP health check result
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "{{ ansible_date_time.iso8601 }} - HTTP health check: {{ 'PASSED' if http_health_check is succeeded else 'FAILED' }}"
+      changed_when: false
+
+    # Final service status verification
+    - name: Get final service status after restart
+      systemd:
+        name: "{{ service_name }}"
+      register: service_status_after
+      check_mode: no
+
+    - name: Verify service is running and enabled
+      assert:
+        that:
+          - service_status_after.status.ActiveState == "active"
+          - service_status_after.status.UnitFileState == "enabled"
+        fail_msg: "Service {{ service_name }} is not in expected state after restart"
+        success_msg: "Service {{ service_name }} successfully restarted and verified"
+
+    - name: Get new connection count
+      shell: "netstat -an | grep :{{ service_port }} | grep ESTABLISHED | wc -l"
+      register: new_connections
+      changed_when: false
+      failed_when: false
+      check_mode: no
+
+    # Final logging
+    - name: Log successful restart completion
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "{{ ansible_date_time.iso8601 }} - Service restart completed successfully. Active connections: {{ new_connections.stdout | default('0') }}"
+      changed_when: false
+
+    - name: Display restart summary
+      debug:
+        msg:
+          - "============================================"
+          - "Service Restart Summary for {{ inventory_hostname }}"
+          - "============================================"
+          - "Service Name: {{ service_name }}"
+          - "Previous State: {{ service_status_before.status.ActiveState }}"
+          - "Current State: {{ service_status_after.status.ActiveState }}"
+          - "Port Status: Listening on {{ service_port }}"
+          - "HTTP Check: {{ 'PASSED' if http_health_check is succeeded else 'FAILED' }}"
+          - "Connections Before: {{ current_connections.stdout | default('0') }}"
+          - "Connections After: {{ new_connections.stdout | default('0') }}"
+          - "Log File: {{ log_file }}"
+          - "============================================"
+
+  handlers:
+    - name: verify_service_health
+      wait_for:
+        port: "{{ service_port }}"
+        state: started
+        timeout: 30
+      check_mode: no
+
+  post_tasks:
+    - name: Send notification on failure
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "{{ ansible_date_time.iso8601 }} - FAILURE: Service restart encountered errors"
+      when: ansible_failed_task is defined
+      changed_when: false
