@@ -1,0 +1,20 @@
+# Generated Code for Ticket: INC0001
+# Problem Pattern: Service Restart
+# Description: MySQL database service stopped
+# Generated: 2026-03-05 06:47:11
+
+service_name: Name of the service to restart (e.g., httpd, apache2, nginx, tomcat)
+service_port: Port number for health checks (default: 80)
+max_restart_attempts: Number of retry attempts (default: 3)
+health_check_retries: Health check retry count (default: 5)
+health_check_delay: Delay between health checks in seconds (default: 10)
+Prerequisites
+Ansible installed on control node
+SSH access to target servers
+Sudo/root privileges on target servers
+Service configuration files are valid
+Execution Instructions
+1. Review the generated playbook
+2. Update inventory file with target hosts
+3. Perform dry run:
+ansible-playbook -i inventory service_restart.yml --check
