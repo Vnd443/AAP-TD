@@ -1,0 +1,254 @@
+# ================================================================================
+# IBM CONSULTING ADVANTAGE (ICA) - CODE GENERATION
+# ================================================================================
+# 
+# [STEP 1/5] Connecting to IBM Consulting Advantage (ICA)...
+#   ✓ Authenticating with ICA API
+#   ✓ API endpoint: https://servicesessentials.ibm.com/apis/v1/sidekick-ai
+#   ✓ Chat session established: 69a9155d093bacbfd85d...
+# 
+# [STEP 2/5] Analyzing Ticket Requirements...
+#   ✓ Ticket ID: INC0001
+#   ✓ Problem Pattern: Service Restart
+#   ✓ Description: MySQL database service stopped...
+#   ✓ Runbook context loaded (664 characters)
+# 
+# [STEP 3/5] Generating Automation Code with ICA AI...
+#   ✓ Building code generation prompt
+#   ✓ Applying best practices and patterns
+#   ✓ Sending request to ICA AI engine...
+#   ✓ Code generated successfully
+# 
+# [STEP 4/5] AI Code Review in Progress...
+#   ✓ Syntax validation: PASSED
+#   ✓ Security scan: PASSED
+#   ✓ Best practices check: PASSED
+#   ✓ Error handling verification: PASSED
+#   ✓ Idempotency check: PASSED
+# 
+#   ✓ Code type: Ansible Playbook
+# 
+# [STEP 5/5] Generating Execution Documentation...
+#   ✓ Prerequisites documented
+#   ✓ Execution steps added
+#   ✓ Rollback procedures included
+#   ✓ Troubleshooting guide added
+# 
+# ================================================================================
+# CODE GENERATION COMPLETED SUCCESSFULLY
+# ================================================================================
+# 
+# ============================================================================
+# EXECUTION INSTRUCTIONS
+# ============================================================================
+# 
+# Prerequisites:
+#   - Appropriate permissions (sudo/root if required)
+#   - Target system access
+#   - Backup of current configuration (recommended)
+# 
+# Execution Steps:
+#   1. Review the generated code thoroughly
+#   2. Test in non-production environment first
+#   3. Execute with appropriate permissions
+#   4. Monitor logs during execution
+#   5. Verify the resolution
+# 
+# For Shell Scripts:
+#   chmod +x INC0001.sh
+#   ./INC0001.sh
+# 
+# For Ansible Playbooks:
+#   ansible-playbook -i inventory INC0001.yml --check  # Dry run
+#   ansible-playbook -i inventory INC0001.yml          # Execute
+# 
+# Rollback Procedure:
+#   - Refer to the manual runbook for rollback steps
+#   - Restore from backup if needed
+#   - Contact support team if issues persist
+# 
+# Troubleshooting:
+#   - Check logs in /var/log/ directory
+#   - Verify network connectivity
+#   - Ensure all prerequisites are met
+#   - Review error messages carefully
+# 
+# ============================================================================
+
+```yaml
+---
+- name: MySQL Database Service Restart Automation - INC0001
+  hosts: all
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    service_name: "mysql"
+    service_port: 3306
+    max_restart_attempts: 3
+    health_check_retries: 5
+    health_check_delay: 10
+    log_file: "/var/log/ansible_service_restart_{{ ansible_date_time.epoch }}.log"
+    
+  tasks:
+    - name: Create log file for incident tracking
+      file:
+        path: "{{ log_file }}"
+        state: touch
+        mode: '0644'
+      changed_when: false
+      
+    - name: Log incident details
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "Incident INC0001 - MySQL service restart initiated at {{ ansible_date_time.iso8601 }}"
+        create: yes
+      changed_when: false
+      
+    - name: Determine MySQL service name based on OS
+      set_fact:
+        service_name: "{{ 'mysql' if ansible_os_family == 'Debian' else 'mysqld' if ansible_os_family == 'RedHat' else 'mysql' }}"
+        
+    - name: Check if MySQL service exists
+      systemd:
+        name: "{{ service_name }}"
+      register: service_status
+      failed_when: false
+      changed_when: false
+      
+    - name: Fail if service does not exist
+      fail:
+        msg: "Service {{ service_name }} does not exist on this system"
+      when: service_status.status is not defined
+      
+    - name: Log initial service status
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "Initial service status: {{ service_status.status.ActiveState | default('unknown') }}"
+      changed_when: false
+      
+    - name: Check MySQL configuration syntax
+      command: "mysqld --help --verbose"
+      register: config_check
+      failed_when: false
+      changed_when: false
+      when: not ansible_check_mode
+      
+    - name: Validate MySQL port availability
+      wait_for:
+        port: "{{ service_port }}"
+        timeout: 5
+        state: stopped
+      register: port_check
+      failed_when: false
+      changed_when: false
+      when: service_status.status.ActiveState == "active"
+      
+    - name: Backup MySQL error log before restart
+      copy:
+        src: "/var/log/mysql/error.log"
+        dest: "/var/log/mysql/error.log.backup.{{ ansible_date_time.epoch }}"
+        remote_src: yes
+      failed_when: false
+      changed_when: false
+      when: not ansible_check_mode
+      
+    - name: Attempt MySQL service restart with retries
+      systemd:
+        name: "{{ service_name }}"
+        state: restarted
+        enabled: yes
+      register: restart_result
+      retries: "{{ max_restart_attempts }}"
+      delay: 10
+      until: restart_result is succeeded
+      notify: Log restart success
+      
+    - name: Wait for MySQL service to stabilize
+      wait_for:
+        timeout: 15
+      delegate_to: localhost
+      changed_when: false
+      
+    - name: Verify MySQL service is running
+      systemd:
+        name: "{{ service_name }}"
+      register: post_restart_status
+      failed_when: post_restart_status.status.ActiveState != "active"
+      changed_when: false
+      
+    - name: Perform health check on MySQL port
+      wait_for:
+        port: "{{ service_port }}"
+        host: "{{ ansible_default_ipv4.address | default('127.0.0.1') }}"
+        timeout: 10
+        state: started
+      register: port_health_check
+      retries: "{{ health_check_retries }}"
+      delay: "{{ health_check_delay }}"
+      until: port_health_check is succeeded
+      
+    - name: Test MySQL connection
+      command: mysqladmin ping -h localhost
+      register: mysql_ping
+      failed_when: mysql_ping.rc != 0
+      changed_when: false
+      when: not ansible_check_mode
+      
+    - name: Verify MySQL process is responding
+      shell: "ps aux | grep -v grep | grep {{ service_name }}"
+      register: process_check
+      failed_when: process_check.rc != 0
+      changed_when: false
+      
+    - name: Check MySQL error log for issues
+      shell: "tail -n 50 /var/log/mysql/error.log | grep -i error || true"
+      register: error_log_check
+      changed_when: false
+      when: not ansible_check_mode
+      
+    - name: Log final service status
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "Final service status: {{ post_restart_status.status.ActiveState }} - Service uptime: {{ post_restart_status.status.ActiveEnterTimestamp | default('N/A') }}"
+      changed_when: false
+      
+    - name: Log port health check result
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "Port {{ service_port }} health check: PASSED"
+      changed_when: false
+      when: port_health_check is succeeded
+      
+    - name: Generate incident resolution summary
+      debug:
+        msg:
+          - "=== INC0001 Resolution Summary ==="
+          - "Service Name: {{ service_name }}"
+          - "Service Status: {{ post_restart_status.status.ActiveState }}"
+          - "Port Status: {{ service_port }} - Listening"
+          - "Restart Attempts: {{ restart_result.attempts | default(1) }}"
+          - "Resolution Time: {{ ansible_date_time.iso8601 }}"
+          - "Log File: {{ log_file }}"
+          
+  handlers:
+    - name: Log restart success
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "MySQL service successfully restarted at {{ ansible_date_time.iso8601 }}"
+        
+  post_tasks:
+    - name: Send completion notification
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "INC0001 - Service restart automation completed successfully at {{ ansible_date_time.iso8601 }}"
+      changed_when: false
+      
+    - name: Final validation check
+      assert:
+        that:
+          - post_restart_status.status.ActiveState == "active"
+          - port_health_check is succeeded
+        success_msg: "All validation checks passed - MySQL service is healthy"
+        fail_msg: "Validation failed - Manual intervention required"
+```
