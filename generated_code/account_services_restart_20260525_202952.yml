@@ -1,0 +1,368 @@
+```yaml
+---
+- name: Automated Account Services Restart Playbook
+  hosts: all
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    # Configurable parameters
+    service_name: "account-services"
+    service_port: 8080
+    max_restart_attempts: 3
+    health_check_retries: 5
+    health_check_delay: 10
+    config_backup_dir: "/var/backups/account-services"
+    log_dir: "/var/log/ansible_restarts"
+    timestamp: "{{ ansible_date_time.iso8601_basic_short }}"
+    
+  tasks:
+    # Pre-flight checks and setup
+    - name: Create log directory if it doesn't exist
+      file:
+        path: "{{ log_dir }}"
+        state: directory
+        mode: '0755'
+      tags: ['setup']
+
+    - name: Create backup directory if it doesn't exist
+      file:
+        path: "{{ config_backup_dir }}"
+        state: directory
+        mode: '0755'
+      tags: ['setup']
+
+    - name: Initialize log file for this run
+      copy:
+        content: |
+          ============================================
+          Account Services Restart Log
+          Timestamp: {{ ansible_date_time.iso8601 }}
+          Host: {{ inventory_hostname }}
+          Service: {{ service_name }}
+          ============================================
+        dest: "{{ log_dir }}/restart_{{ timestamp }}.log"
+        mode: '0644'
+      tags: ['setup']
+
+    # Service detection and validation
+    - name: Detect service manager (systemd/init)
+      shell: |
+        if command -v systemctl &> /dev/null; then
+          echo "systemd"
+        elif command -v service &> /dev/null; then
+          echo "init"
+        else
+          echo "unknown"
+        fi
+      register: service_manager
+      changed_when: false
+      tags: ['detection']
+
+    - name: Fail if service manager is unknown
+      fail:
+        msg: "Unable to detect service manager on {{ inventory_hostname }}"
+      when: service_manager.stdout == "unknown"
+      tags: ['detection']
+
+    - name: Check if account-services exists
+      shell: |
+        {% if service_manager.stdout == "systemd" %}
+        systemctl list-unit-files | grep -q "{{ service_name }}" && echo "exists" || echo "not_found"
+        {% else %}
+        service --status-all 2>&1 | grep -q "{{ service_name }}" && echo "exists" || echo "not_found"
+        {% endif %}
+      register: service_exists
+      changed_when: false
+      tags: ['detection']
+
+    - name: Fail if service does not exist
+      fail:
+        msg: "Service {{ service_name }} not found on {{ inventory_hostname }}"
+      when: service_exists.stdout == "not_found"
+      tags: ['detection']
+
+    # Gather pre-restart information
+    - name: Get current service status (systemd)
+      systemd:
+        name: "{{ service_name }}"
+      register: service_status_before
+      ignore_errors: yes
+      when: service_manager.stdout == "systemd"
+      tags: ['status']
+
+    - name: Get current service status (init)
+      shell: "service {{ service_name }} status"
+      register: init_service_status_before
+      ignore_errors: yes
+      changed_when: false
+      when: service_manager.stdout == "init"
+      tags: ['status']
+
+    - name: Capture service logs before restart (last 100 lines)
+      shell: |
+        {% if service_manager.stdout == "systemd" %}
+        journalctl -u {{ service_name }} -n 100 --no-pager
+        {% else %}
+        tail -n 100 /var/log/{{ service_name }}/*.log 2>/dev/null || echo "No logs found"
+        {% endif %}
+      register: pre_restart_logs
+      changed_when: false
+      ignore_errors: yes
+      tags: ['logging']
+
+    - name: Log pre-restart service status
+      lineinfile:
+        path: "{{ log_dir }}/restart_{{ timestamp }}.log"
+        line: |
+          
+          PRE-RESTART STATUS:
+          {{ service_status_before | default(init_service_status_before) }}
+        create: yes
+      tags: ['logging']
+
+    # Configuration validation and backup
+    - name: Check for service configuration files
+      find:
+        paths:
+          - "/etc/{{ service_name }}"
+          - "/etc/default"
+          - "/etc/sysconfig"
+        patterns:
+          - "{{ service_name }}*"
+          - "*.conf"
+          - "*.config"
+        recurse: yes
+      register: config_files
+      tags: ['config']
+
+    - name: Backup current configuration files
+      archive:
+        path: "{{ item.path }}"
+        dest: "{{ config_backup_dir }}/{{ item.path | basename }}_{{ timestamp }}.gz"
+        format: gz
+      loop: "{{ config_files.files }}"
+      when: config_files.matched > 0
+      ignore_errors: yes
+      tags: ['config', 'backup']
+
+    - name: Validate configuration if validation script exists
+      shell: |
+        if [ -f "/usr/bin/{{ service_name }}-validate" ]; then
+          /usr/bin/{{ service_name }}-validate
+        elif [ -f "/opt/{{ service_name }}/bin/validate" ]; then
+          /opt/{{ service_name }}/bin/validate
+        else
+          echo "No validation script found - skipping"
+          exit 0
+        fi
+      register: config_validation
+      ignore_errors: yes
+      changed_when: false
+      tags: ['config', 'validation']
+
+    - name: Log configuration validation results
+      lineinfile:
+        path: "{{ log_dir }}/restart_{{ timestamp }}.log"
+        line: |
+          
+          CONFIGURATION VALIDATION:
+          {{ config_validation.stdout }}
+          {{ config_validation.stderr }}
+      tags: ['logging']
+
+    # Service restart with retry logic
+    - name: Stop account-services (systemd)
+      systemd:
+        name: "{{ service_name }}"
+        state: stopped
+      register: service_stop
+      ignore_errors: yes
+      when: service_manager.stdout == "systemd"
+      tags: ['restart']
+
+    - name: Stop account-services (init)
+      shell: "service {{ service_name }} stop"
+      register: init_service_stop
+      ignore_errors: yes
+      when: service_manager.stdout == "init"
+      tags: ['restart']
+
+    - name: Wait for service to fully stop
+      wait_for:
+        port: "{{ service_port }}"
+        state: stopped
+        timeout: 30
+      ignore_errors: yes
+      tags: ['restart']
+
+    - name: Verify no processes are still running
+      shell: "pgrep -f {{ service_name }} || true"
+      register: remaining_processes
+      changed_when: false
+      tags: ['restart']
+
+    - name: Force kill remaining processes if any
+      shell: "pkill -9 -f {{ service_name }}"
+      when: remaining_processes.stdout != ""
+      ignore_errors: yes
+      tags: ['restart']
+
+    - name: Start account-services with retry (systemd)
+      systemd:
+        name: "{{ service_name }}"
+        state: started
+        enabled: yes
+      register: service_start
+      retries: "{{ max_restart_attempts }}"
+      delay: 5
+      until: service_start is succeeded
+      when: service_manager.stdout == "systemd"
+      tags: ['restart']
+
+    - name: Start account-services with retry (init)
+      shell: "service {{ service_name }} start"
+      register: init_service_start
+      retries: "{{ max_restart_attempts }}"
+      delay: 5
+      until: init_service_start.rc == 0
+      when: service_manager.stdout == "init"
+      tags: ['restart']
+
+    - name: Wait for service to initialize
+      pause:
+        seconds: 10
+      tags: ['restart']
+
+    # Post-restart validation
+    - name: Verify service is running (systemd)
+      systemd:
+        name: "{{ service_name }}"
+      register: service_status_after
+      failed_when: service_status_after.status.ActiveState != "active"
+      when: service_manager.stdout == "systemd"
+      tags: ['validation']
+
+    - name: Verify service is running (init)
+      shell: "service {{ service_name }} status"
+      register: init_service_status_after
+      failed_when: init_service_status_after.rc != 0
+      when: service_manager.stdout == "init"
+      tags: ['validation']
+
+    - name: Wait for service port to be available
+      wait_for:
+        port: "{{ service_port }}"
+        host: "{{ ansible_default_ipv4.address | default('127.0.0.1') }}"
+        state: started
+        delay: "{{ health_check_delay }}"
+        timeout: 60
+      register: port_check
+      retries: "{{ health_check_retries }}"
+      delay: "{{ health_check_delay }}"
+      until: port_check is succeeded
+      ignore_errors: yes
+      tags: ['validation', 'health_check']
+
+    - name: Perform HTTP health check if applicable
+      uri:
+        url: "http://localhost:{{ service_port }}/health"
+        method: GET
+        status_code: 
+          - 200
+          - 201
+          - 204
+        timeout: 10
+      register: http_health_check
+      retries: "{{ health_check_retries }}"
+      delay: "{{ health_check_delay }}"
+      until: http_health_check is succeeded
+      ignore_errors: yes
+      tags: ['validation', 'health_check']
+
+    - name: Check for errors in service logs after restart
+      shell: |
+        {% if service_manager.stdout == "systemd" %}
+        journalctl -u {{ service_name }} --since "2 minutes ago" -p err --no-pager
+        {% else %}
+        tail -n 50 /var/log/{{ service_name }}/*.log 2>/dev/null | grep -i error || echo "No errors found"
+        {% endif %}
+      register: post_restart_errors
+      changed_when: false
+      ignore_errors: yes
+      tags: ['validation', 'logging']
+
+    - name: Capture service logs after restart (last 50 lines)
+      shell: |
+        {% if service_manager.stdout == "systemd" %}
+        journalctl -u {{ service_name }} -n 50 --no-pager
+        {% else %}
+        tail -n 50 /var/log/{{ service_name }}/*.log 2>/dev/null || echo "No logs found"
+        {% endif %}
+      register: post_restart_logs
+      changed_when: false
+      ignore_errors: yes
+      tags: ['logging']
+
+    # Final reporting and logging
+    - name: Generate restart summary
+      set_fact:
+        restart_summary: |
+          
+          ============================================
+          RESTART SUMMARY
+          ============================================
+          Service: {{ service_name }}
+          Host: {{ inventory_hostname }}
+          Status: {{ 'SUCCESS' if (service_status_after.status.ActiveState == 'active' if service_manager.stdout == 'systemd' else init_service_status_after.rc == 0) else 'FAILED' }}
+          Port Check: {{ 'PASSED' if port_check is succeeded else 'FAILED' }}
+          HTTP Health Check: {{ 'PASSED' if http_health_check is succeeded else 'FAILED/SKIPPED' }}
+          Restart Attempts: {{ service_start.attempts | default(init_service_start.attempts) | default(1) }}
+          Timestamp: {{ ansible_date_time.iso8601 }}
+          
+          POST-RESTART ERRORS:
+          {{ post_restart_errors.stdout | default('None detected') }}
+          
+          RECENT LOGS:
+          {{ post_restart_logs.stdout | default('No logs available') }}
+          ============================================
+      tags: ['reporting']
+
+    - name: Write restart summary to log file
+      copy:
+        content: "{{ restart_summary }}"
+        dest: "{{ log_dir }}/restart_{{ timestamp }}.log"
+        mode: '0644'
+      tags: ['reporting']
+
+    - name: Display restart summary
+      debug:
+        msg: "{{ restart_summary }}"
+      tags: ['reporting']
+
+    - name: Send notification on failure
+      debug:
+        msg: "ALERT: Service restart failed on {{ inventory_hostname }}. Check logs at {{ log_dir }}/restart_{{ timestamp }}.log"
+      when: >
+        (service_manager.stdout == "systemd" and service_status_after.status.ActiveState != "active") or
+        (service_manager.stdout == "init" and init_service_status_after.rc != 0)
+      tags: ['reporting']
+
+    - name: Mark playbook execution as successful
+      set_fact:
+        restart_successful: true
+      when: >
+        (service_manager.stdout == "systemd" and service_status_after.status.ActiveState == "active") or
+        (service_manager.stdout == "init" and init_service_status_after.rc == 0)
+      tags: ['reporting']
+
+  # Post-execution handlers
+  handlers:
+    - name: cleanup_old_logs
+      shell: "find {{ log_dir }} -name 'restart_*.log' -mtime +30 -delete"
+      ignore_errors: yes
+
+    - name: cleanup_old_backups
+      shell: "find {{ config_backup_dir }} -name '*.gz' -mtime +30 -delete"
+      ignore_errors: yes
+```
