@@ -1,0 +1,338 @@
+```yaml
+---
+- name: Database Backup and Restore Automation
+  hosts: all
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    # Configurable Parameters
+    db_name: "mydb"
+    db_user: "backup_user"
+    db_password: "{{ lookup('env', 'DB_PASSWORD') | default('changeme') }}"
+    backup_dir: "/backup/mysql"
+    retention_days: 30
+    backup_timestamp: "{{ ansible_date_time.iso8601_basic_short }}"
+    backup_file: "{{ backup_dir }}/{{ db_name }}_{{ backup_timestamp }}.sql.gz"
+    log_dir: "/var/log/backup"
+    log_file: "{{ log_dir }}/backup_{{ ansible_date_time.date }}.log"
+    restore_from_file: ""  # Set this variable to restore from specific backup
+    app_service_name: ""  # Optional: Service to stop during restore
+    
+  tasks:
+    # Pre-flight Validation
+    - name: Validate required variables
+      assert:
+        that:
+          - db_name is defined and db_name | length > 0
+          - db_user is defined and db_user | length > 0
+          - backup_dir is defined and backup_dir | length > 0
+        fail_msg: "Required variables (db_name, db_user, backup_dir) must be defined"
+        success_msg: "All required variables are properly defined"
+      tags: ['always']
+
+    - name: Create log directory
+      file:
+        path: "{{ log_dir }}"
+        state: directory
+        mode: '0755'
+        owner: root
+        group: root
+      tags: ['always']
+
+    - name: Initialize log file
+      copy:
+        content: |
+          ==========================================
+          Backup/Restore Operation Started
+          Timestamp: {{ ansible_date_time.iso8601 }}
+          Host: {{ ansible_hostname }}
+          ==========================================
+        dest: "{{ log_file }}"
+        mode: '0644'
+      tags: ['always']
+
+    # Backup Operations
+    - name: Create backup directory if not exists
+      file:
+        path: "{{ backup_dir }}"
+        state: directory
+        mode: '0750'
+        owner: root
+        group: root
+      tags: ['backup']
+
+    - name: Check if MySQL/MariaDB is installed
+      command: which mysqldump
+      register: mysqldump_check
+      failed_when: false
+      changed_when: false
+      tags: ['backup', 'restore']
+
+    - name: Fail if mysqldump is not available
+      fail:
+        msg: "mysqldump command not found. Please install MySQL/MariaDB client."
+      when: mysqldump_check.rc != 0
+      tags: ['backup']
+
+    - name: Check database connectivity
+      shell: |
+        mysql -u {{ db_user }} -p'{{ db_password }}' -e "SELECT 1;" {{ db_name }} > /dev/null 2>&1
+      register: db_connectivity
+      failed_when: false
+      changed_when: false
+      no_log: true
+      tags: ['backup', 'restore']
+
+    - name: Log database connectivity status
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "[{{ ansible_date_time.time }}] Database connectivity check: {{ 'SUCCESS' if db_connectivity.rc == 0 else 'FAILED' }}"
+        create: yes
+      tags: ['backup', 'restore']
+
+    - name: Fail if database is not accessible
+      fail:
+        msg: "Cannot connect to database {{ db_name }}. Check credentials and database status."
+      when: db_connectivity.rc != 0
+      tags: ['backup']
+
+    - name: Perform database backup
+      shell: |
+        set -o pipefail
+        mysqldump -u {{ db_user }} -p'{{ db_password }}' \
+          --single-transaction \
+          --routines \
+          --triggers \
+          --events \
+          {{ db_name }} | gzip > {{ backup_file }}
+      args:
+        executable: /bin/bash
+      register: backup_result
+      failed_when: backup_result.rc != 0
+      no_log: true
+      tags: ['backup']
+
+    - name: Log backup completion
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "[{{ ansible_date_time.time }}] Backup completed: {{ backup_file }}"
+      when: backup_result.rc == 0
+      tags: ['backup']
+
+    - name: Verify backup file exists
+      stat:
+        path: "{{ backup_file }}"
+      register: backup_file_stat
+      tags: ['backup']
+
+    - name: Fail if backup file was not created
+      fail:
+        msg: "Backup file {{ backup_file }} was not created"
+      when: not backup_file_stat.stat.exists
+      tags: ['backup']
+
+    - name: Verify backup integrity
+      command: gunzip -t {{ backup_file }}
+      register: backup_verify
+      failed_when: backup_verify.rc != 0
+      changed_when: false
+      tags: ['backup']
+
+    - name: Log backup verification status
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "[{{ ansible_date_time.time }}] Backup verification: {{ 'SUCCESS' if backup_verify.rc == 0 else 'FAILED' }}"
+      tags: ['backup']
+
+    - name: Get backup file size
+      stat:
+        path: "{{ backup_file }}"
+      register: backup_size
+      tags: ['backup']
+
+    - name: Display backup information
+      debug:
+        msg:
+          - "Backup completed successfully"
+          - "File: {{ backup_file }}"
+          - "Size: {{ (backup_size.stat.size / 1024 / 1024) | round(2) }} MB"
+      tags: ['backup']
+
+    - name: Log backup size
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "[{{ ansible_date_time.time }}] Backup size: {{ (backup_size.stat.size / 1024 / 1024) | round(2) }} MB"
+      tags: ['backup']
+
+    - name: Find old backups to clean
+      find:
+        paths: "{{ backup_dir }}"
+        patterns: "{{ db_name }}_*.sql.gz"
+        age: "{{ retention_days }}d"
+        age_stamp: mtime
+      register: old_backups
+      tags: ['backup', 'cleanup']
+
+    - name: Remove old backups
+      file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ old_backups.files }}"
+      when: old_backups.files | length > 0
+      tags: ['backup', 'cleanup']
+
+    - name: Log cleanup operation
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "[{{ ansible_date_time.time }}] Cleaned {{ old_backups.files | length }} old backup(s) (older than {{ retention_days }} days)"
+      when: old_backups.files | length > 0
+      tags: ['backup', 'cleanup']
+
+    # Restore Operations
+    - name: Check if restore file is specified
+      set_fact:
+        perform_restore: "{{ restore_from_file | length > 0 }}"
+      tags: ['restore']
+
+    - name: Verify restore file exists
+      stat:
+        path: "{{ restore_from_file }}"
+      register: restore_file_stat
+      when: perform_restore | bool
+      tags: ['restore']
+
+    - name: Fail if restore file does not exist
+      fail:
+        msg: "Restore file {{ restore_from_file }} does not exist"
+      when: 
+        - perform_restore | bool
+        - not restore_file_stat.stat.exists
+      tags: ['restore']
+
+    - name: Verify restore file integrity
+      command: gunzip -t {{ restore_from_file }}
+      register: restore_verify
+      failed_when: restore_verify.rc != 0
+      changed_when: false
+      when: perform_restore | bool
+      tags: ['restore']
+
+    - name: Stop application service if specified
+      systemd:
+        name: "{{ app_service_name }}"
+        state: stopped
+      when: 
+        - perform_restore | bool
+        - app_service_name | length > 0
+      register: service_stopped
+      tags: ['restore']
+
+    - name: Log service stop
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "[{{ ansible_date_time.time }}] Stopped service: {{ app_service_name }}"
+      when: service_stopped is changed
+      tags: ['restore']
+
+    - name: Create pre-restore backup
+      shell: |
+        set -o pipefail
+        mysqldump -u {{ db_user }} -p'{{ db_password }}' \
+          --single-transaction \
+          {{ db_name }} | gzip > {{ backup_dir }}/{{ db_name }}_pre_restore_{{ backup_timestamp }}.sql.gz
+      args:
+        executable: /bin/bash
+      register: pre_restore_backup
+      no_log: true
+      when: perform_restore | bool
+      tags: ['restore']
+
+    - name: Log pre-restore backup
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "[{{ ansible_date_time.time }}] Pre-restore backup created: {{ backup_dir }}/{{ db_name }}_pre_restore_{{ backup_timestamp }}.sql.gz"
+      when: pre_restore_backup is changed
+      tags: ['restore']
+
+    - name: Restore database from backup
+      shell: |
+        set -o pipefail
+        gunzip -c {{ restore_from_file }} | mysql -u {{ db_user }} -p'{{ db_password }}' {{ db_name }}
+      args:
+        executable: /bin/bash
+      register: restore_result
+      no_log: true
+      when: perform_restore | bool
+      tags: ['restore']
+
+    - name: Log restore completion
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "[{{ ansible_date_time.time }}] Database restored from: {{ restore_from_file }}"
+      when: restore_result is changed
+      tags: ['restore']
+
+    - name: Verify restored data
+      shell: |
+        mysql -u {{ db_user }} -p'{{ db_password }}' -e "SHOW TABLES;" {{ db_name }} | wc -l
+      register: table_count
+      changed_when: false
+      no_log: true
+      when: perform_restore | bool
+      tags: ['restore']
+
+    - name: Log data verification
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "[{{ ansible_date_time.time }}] Restored database contains {{ table_count.stdout | int - 1 }} tables"
+      when: perform_restore | bool
+      tags: ['restore']
+
+    - name: Start application service if it was stopped
+      systemd:
+        name: "{{ app_service_name }}"
+        state: started
+      when: 
+        - perform_restore | bool
+        - service_stopped is changed
+      register: service_started
+      tags: ['restore']
+
+    - name: Log service start
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "[{{ ansible_date_time.time }}] Started service: {{ app_service_name }}"
+      when: service_started is changed
+      tags: ['restore']
+
+    - name: List available backups
+      find:
+        paths: "{{ backup_dir }}"
+        patterns: "{{ db_name }}_*.sql.gz"
+      register: available_backups
+      tags: ['list', 'always']
+
+    - name: Display available backups
+      debug:
+        msg: "{{ available_backups.files | map(attribute='path') | list }}"
+      tags: ['list']
+
+    - name: Finalize log
+      lineinfile:
+        path: "{{ log_file }}"
+        line: |
+          [{{ ansible_date_time.time }}] Operation completed successfully
+          ==========================================
+      tags: ['always']
+
+    - name: Display log file location
+      debug:
+        msg: "Full log available at: {{ log_file }}"
+      tags: ['always']
+
+  handlers:
+    - name: Send backup notification
+      debug:
+        msg: "Backup notification: Operation completed on {{ ansible_hostname }}"
+```
