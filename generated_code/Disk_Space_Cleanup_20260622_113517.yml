@@ -1,0 +1,66 @@
+---
+- name: Disk Space Cleanup Playbook
+  hosts: all
+  become: yes
+  vars:
+    target_path: "/var/log"
+    days_old: 30
+    threshold: 90
+
+  tasks:
+
+    - name: Gather disk usage facts
+      command: df -h /
+      register: disk_usage_raw
+      changed_when: false
+
+    - name: Parse disk usage percentage
+      set_fact:
+        disk_usage: "{{ disk_usage_raw.stdout_lines[1].split()[4] | regex_replace('%','') | int }}"
+
+    - name: Log current disk usage
+      debug:
+        msg: "Current disk usage is {{ disk_usage }}%"
+
+    - name: Fail if disk usage cannot be determined
+      fail:
+        msg: "Unable to determine disk usage."
+      when: disk_usage is not defined
+
+    - name: Proceed only if disk usage exceeds threshold
+      debug:
+        msg: "Disk usage exceeds threshold. Cleanup will begin."
+      when: disk_usage > threshold
+
+    - name: Clean old log files
+      find:
+        paths: "{{ target_path }}"
+        age: "{{ days_old }}d"
+        file_type: file
+      register: old_logs
+      when: disk_usage > threshold
+
+    - name: Delete old log files
+      file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ old_logs.files }}"
+      when: disk_usage > threshold
+
+    - name: Clean /tmp directory
+      file:
+        path: /tmp
+        state: directory
+        mode: '1777'
+        recurse: yes
+      when: disk_usage > threshold
+
+    - name: Re-check disk usage after cleanup
+      command: df -h /
+      register: disk_usage_after
+      changed_when: false
+      when: disk_usage > threshold
+
+    - name: Log disk usage after cleanup
+      debug:
+        msg: "Disk usage after cleanup: {{ disk_usage_after.stdout_lines[1].split()[4] }}"
