@@ -1,0 +1,70 @@
+---
+- name: Disk Space Cleanup Playbook
+  hosts: all
+  become: yes
+  vars:
+    TARGET_PATH: "/var/log"
+    DAYS_OLD: 30
+    THRESHOLD: 90
+    LOG_FILE: "/var/log/disk_cleanup_ansible.log"
+
+  tasks:
+
+    - name: Check disk usage of root filesystem
+    command: df -h /
+    register: disk_usage_raw
+
+    - name: Parse disk usage percentage
+    set_fact:
+      disk_usage_percent: "{{ disk_usage_raw.stdout_lines[1].split()[4] | regex_replace('%','') | int }}"
+
+    - name: Log current disk usage
+    lineinfile:
+      path: "{{ LOG_FILE }}"
+      line: "Disk usage check: {{ disk_usage_percent }}% on {{ ansible_date_time.iso8601 }}"
+      create: yes
+    delegate_to: localhost
+
+    - name: Stop if disk usage below threshold
+    meta: end_play
+    when: disk_usage_percent < THRESHOLD
+
+    - name: Log cleanup starting
+    lineinfile:
+      path: "{{ LOG_FILE }}"
+      line: "Cleanup triggered at {{ ansible_date_time.iso8601 }} (usage: {{ disk_usage_percent }}%)"
+    delegate_to: localhost
+
+    - name: Clean old log files
+    find:
+      paths: "{{ TARGET_PATH }}"
+      age: "{{ DAYS_OLD }}d"
+      file_type: file
+    register: old_logs
+
+    - name: Delete old log files
+    file:
+      path: "{{ item.path }}"
+      state: absent
+    loop: "{{ old_logs.files }}"
+
+    - name: Clean temporary files from /tmp
+    file:
+      path: "{{ item }}"
+      state: absent
+    with_fileglob:
+      - "/tmp/*"
+
+    - name: Re-check disk usage
+    command: df -h /
+    register: final_usage
+
+    - name: Parse final disk usage percentage
+    set_fact:
+      final_disk_usage_percent: "{{ final_usage.stdout_lines[1].split()[4] | regex_replace('%','') | int }}"
+
+    - name: Log cleanup result
+    lineinfile:
+      path: "{{ LOG_FILE }}"
+      line: "Cleanup completed at {{ ansible_date_time.iso8601 }} (new usage: {{ final_disk_usage_percent }}%)"
+    delegate_to: localhost
