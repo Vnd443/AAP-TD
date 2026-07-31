@@ -1,0 +1,230 @@
+---
+- name: Disk Space Cleanup Automation
+  hosts: all
+  become: yes
+  gather_facts: yes
+  vars:
+    target_path: "/var/log"
+    days_old: 30
+    threshold: 90
+    tmp_cleanup_days: 7
+    notification_log: "/var/log/disk_cleanup_automation.log"
+    
+  tasks:
+    - name: Create cleanup log file if not exists
+      file:
+        path: "{{ notification_log }}"
+        state: touch
+        mode: '0644'
+      changed_when: false
+
+    - name: Get current timestamp
+      set_fact:
+        cleanup_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+    - name: Check disk usage for all mounted filesystems
+      shell: df -h | awk 'NR>1 {print $6"|"$5}' | sed 's/%//'
+      register: disk_usage_raw
+      changed_when: false
+
+    - name: Parse disk usage data
+      set_fact:
+        disk_usage_ "{{ disk_usage_raw.stdout_lines | map('split', '|') | list }}"
+
+    - name: Identify filesystems exceeding threshold
+      set_fact:
+        critical_filesystems: "{{ disk_usage_data | selectattr('1', 'match', '^[0-9]+$') | select('test', threshold | int, '<=', 'value.1 | int') | map(attribute='0') | list }}"
+
+    - name: Log initial disk usage status
+      lineinfile:
+        path: "{{ notification_log }}"
+        line: "[{{ cleanup_timestamp }}] INFO: Starting disk cleanup automation on {{ ansible_hostname }}"
+        create: yes
+
+    - name: Log filesystems exceeding threshold
+      lineinfile:
+        path: "{{ notification_log }}"
+        line: "[{{ cleanup_timestamp }}] WARNING: Filesystem {{ item.0 }} is at {{ item.1 }}% usage (threshold: {{ threshold }}%)"
+        create: yes
+      loop: "{{ disk_usage_data }}"
+      when: item.1 | int >= threshold | int
+
+    - name: Check if target path exists
+      stat:
+        path: "{{ target_path }}"
+      register: target_path_stat
+
+    - name: Log warning if target path does not exist
+      lineinfile:
+        path: "{{ notification_log }}"
+        line: "[{{ cleanup_timestamp }}] WARNING: Target path {{ target_path }} does not exist, skipping log cleanup"
+      when: not target_path_stat.stat.exists
+
+    - name: Find old log files in target path
+      find:
+        paths: "{{ target_path }}"
+        patterns: "*.log,*.log.*,*.gz,*.zip,*.old"
+        age: "{{ days_old }}d"
+        recurse: yes
+        file_type: file
+      register: old_log_files
+      when: target_path_stat.stat.exists
+
+    - name: Calculate total size of old log files
+      set_fact:
+        total_old_logs_size: "{{ old_log_files.files | map(attribute='size') | sum }}"
+      when: 
+        - target_path_stat.stat.exists
+        - old_log_files.matched > 0
+
+    - name: Log old log files found
+      lineinfile:
+        path: "{{ notification_log }}"
+        line: "[{{ cleanup_timestamp }}] INFO: Found {{ old_log_files.matched }} old log files ({{ (total_old_logs_size | int / 1024 / 1024) | round(2) }} MB) older than {{ days_old }} days in {{ target_path }}"
+      when: 
+        - target_path_stat.stat.exists
+        - old_log_files.matched > 0
+
+    - name: Remove old log files
+      file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ old_log_files.files }}"
+      when: 
+        - target_path_stat.stat.exists
+        - old_log_files.matched > 0
+      register: log_cleanup_result
+      ignore_errors: yes
+
+    - name: Log successful log file removals
+      lineinfile:
+        path: "{{ notification_log }}"
+        line: "[{{ cleanup_timestamp }}] INFO: Successfully removed {{ old_log_files.matched }} old log files from {{ target_path }}"
+      when: 
+        - target_path_stat.stat.exists
+        - old_log_files.matched > 0
+        - log_cleanup_result is succeeded
+
+    - name: Check if /tmp exists
+      stat:
+        path: "/tmp"
+      register: tmp_path_stat
+
+    - name: Find old temporary files in /tmp
+      find:
+        paths: "/tmp"
+        age: "{{ tmp_cleanup_days }}d"
+        recurse: no
+        file_type: file
+      register: old_tmp_files
+      when: tmp_path_stat.stat.exists
+
+    - name: Find old temporary directories in /tmp
+      find:
+        paths: "/tmp"
+        age: "{{ tmp_cleanup_days }}d"
+        recurse: no
+        file_type: directory
+      register: old_tmp_dirs
+      when: tmp_path_stat.stat.exists
+
+    - name: Log temporary files cleanup
+      lineinfile:
+        path: "{{ notification_log }}"
+        line: "[{{ cleanup_timestamp }}] INFO: Found {{ old_tmp_files.matched }} old files and {{ old_tmp_dirs.matched }} old directories in /tmp older than {{ tmp_cleanup_days }} days"
+      when: 
+        - tmp_path_stat.stat.exists
+        - (old_tmp_files.matched > 0 or old_tmp_dirs.matched > 0)
+
+    - name: Remove old temporary files
+      file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ old_tmp_files.files }}"
+      when: 
+        - tmp_path_stat.stat.exists
+        - old_tmp_files.matched > 0
+      ignore_errors: yes
+
+    - name: Remove old temporary directories
+      file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ old_tmp_dirs.files }}"
+      when: 
+        - tmp_path_stat.stat.exists
+        - old_tmp_dirs.matched > 0
+      ignore_errors: yes
+
+    - name: Clean package manager cache (Debian/Ubuntu)
+      apt:
+        autoclean: yes
+        autoremove: yes
+      when: ansible_os_family == "Debian"
+      ignore_errors: yes
+
+    - name: Clean package manager cache (RedHat/CentOS)
+      shell: yum clean all
+      when: ansible_os_family == "RedHat"
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Log package cache cleanup
+      lineinfile:
+        path: "{{ notification_log }}"
+        line: "[{{ cleanup_timestamp }}] INFO: Cleaned package manager cache for {{ ansible_os_family }}"
+
+    - name: Clean journal logs older than 7 days
+      shell: journalctl --vacuum-time=7d
+      when: ansible_service_mgr == "systemd"
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Log journal cleanup
+      lineinfile:
+        path: "{{ notification_log }}"
+        line: "[{{ cleanup_timestamp }}] INFO: Cleaned systemd journal logs older than 7 days"
+      when: ansible_service_mgr == "systemd"
+
+    - name: Verify disk usage after cleanup
+      shell: df -h | awk 'NR>1 {print $6"|"$5}' | sed 's/%//'
+      register: disk_usage_after
+      changed_when: false
+
+    - name: Parse post-cleanup disk usage
+      set_fact:
+        disk_usage_after_data: "{{ disk_usage_after.stdout_lines | map('split', '|') | list }}"
+
+    - name: Log post-cleanup disk usage
+      lineinfile:
+        path: "{{ notification_log }}"
+        line: "[{{ cleanup_timestamp }}] INFO: Post-cleanup - Filesystem {{ item.0 }} is at {{ item.1 }}% usage"
+      loop: "{{ disk_usage_after_data }}"
+
+    - name: Check if cleanup resolved critical filesystems
+      set_fact:
+        still_critical: "{{ disk_usage_after_data | selectattr('1', 'match', '^[0-9]+$') | select('test', threshold | int, '<=', 'value.1 | int') | map(attribute='0') | list }}"
+
+    - name: Log warning if filesystems still critical
+      lineinfile:
+        path: "{{ notification_log }}"
+        line: "[{{ cleanup_timestamp }}] WARNING: Filesystem {{ item }} still exceeds threshold after cleanup - manual intervention required"
+      loop: "{{ still_critical }}"
+      when: still_critical | length > 0
+
+    - name: Log successful completion
+      lineinfile:
+        path: "{{ notification_log }}"
+        line: "[{{ cleanup_timestamp }}] INFO: Disk cleanup automation completed successfully on {{ ansible_hostname }}"
+
+    - name: Display cleanup summary
+      debug:
+        msg:
+          - "=== Disk Cleanup Summary ==="
+          - "Hostname: {{ ansible_hostname }}"
+          - "Old log files removed: {{ old_log_files.matched | default(0) }}"
+          - "Temp files cleaned: {{ old_tmp_files.matched | default(0) }}"
+          - "Temp directories cleaned: {{ old_tmp_dirs.matched | default(0) }}"
+          - "Critical filesystems before: {{ critical_filesystems | length }}"
+          - "Critical filesystems after: {{ still_critical | length }}"
+          - "Detailed log: {{ notification_log }}"
