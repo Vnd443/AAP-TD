@@ -1,0 +1,250 @@
+---
+- name: Recover Network Printing Service Disruption
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    printer_name: "OfficePrinter"
+    printer_ip: "192.168.1.100"
+    clear_queue: true
+    max_restart_attempts: 3
+    health_check_delay: 10
+    log_file: "/var/log/ansible_printer_recovery.log"
+
+  tasks:
+    - name: Ensure log file exists
+      file:
+        path: "{{ log_file }}"
+        state: touch
+        mode: '0644'
+      when: ansible_os_family != "Windows"
+
+    - name: Set Linux print service name
+      set_fact:
+        print_service: "cups"
+      when: ansible_os_family != "Windows"
+
+    - name: Set Windows print service name
+      set_fact:
+        print_service: "Spooler"
+      when: ansible_os_family == "Windows"
+
+    - name: Log start of recovery process
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "{{ log_file }}"
+        line: "{{ ansible_date_time.iso8601 }} INFO Starting print recovery for printer {{ printer_name }}"
+        create: true
+      when: ansible_os_family != "Windows"
+
+    - name: Validate printer IP format
+      assert:
+        that:
+          - printer_ip is match("^(?:[0-9]{1,3}\\.){3}[0-9]{1,3}$")
+        fail_msg: "Invalid printer_ip value provided."
+
+    - name: Gather Linux service facts
+      service_facts:
+      when: ansible_os_family != "Windows"
+
+    - name: Check Linux print service presence
+      assert:
+        that:
+          - "'{{ print }}.service' in services"
+        fail_msg: "Print service {{ print_service }} not found on target system."
+      when: ansible_os_family != "Windows"
+
+    - name: Check Windows spooler service status
+      win_service:
+        name: "{{ print_service }}"
+      register: windows_service_info
+      when: ansible_os_family == "Windows"
+
+    - name: Fail if Windows spooler service not found
+      fail:
+        msg: "Print service {{ print_service }} not found on Windows target."
+      when:
+        - ansible_os_family == "Windows"
+        - windows_service_info.exists is defined
+        - not windows_service_info.exists
+
+    - name: List current print jobs on Linux
+      shell: "lpstat -o {{ printer_name }}"
+      register: linux_jobs
+      failed_when: false
+      changed_when: false
+      when: ansible_os_family != "Windows"
+
+    - name: List current print jobs on Windows
+      win_shell: |
+        Get-PrintJob -PrinterName "{{ printer_name }}" | Select-Object -ExpandProperty ID
+      register: windows_jobs
+      failed_when: false
+      changed_when: false
+      when: ansible_os_family == "Windows"
+
+    - name: Log queued jobs on Linux
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "{{ ansible_date_time.iso8601 }} INFO Current jobs: {{ linux_jobs.stdout | default('none') }}"
+        create: true
+      when:
+        - ansible_os_family != "Windows"
+
+    - name: Clear Linux print queue
+      shell: "cancel -a {{ printer_name }}"
+      register: clear_linux_queue
+      failed_when: false
+      changed_when: clear_linux_queue.rc register: clear_linux_queue
+      failed_when: false
+      changed_when: clear_linux_queue.rc == 0
+      when:
+        - ansible_os_family != "Windows"
+        - clear_queue | bool
+
+    - name: Clear Windows print queue
+      win_shell: |
+        Get-PrintJob -PrinterName "{{ printer_name }}" -ErrorAction SilentlyContinue | Remove-PrintJob
+      register: clear_windows_queue
+      failed_when: false
+      changed_when: true
+      when:
+        - ansible_os_family == "Windows"
+        - clear_queue | bool
+
+    - name: Restart Linux print service with retries
+      service:
+        name: "{{ print_service }}"
+        state: restarted
+      register: linux_restart
+      retries: "{{ max_restart_attempts }}"
+      delay: "{{ max_restart_attempts }}"
+      delay: "{{ health_check_delay }}"
+      until: linux_restart is succeeded
+      when: ansible_os_family != "Windows"
+
+    - name: Restart Windows print service with retries
+      win_service:
+        name: "{{ print_service }}"
+        state: restarted
+      register: windows_restart
+      retries: name: "{{ print_service }}"
+        state: restarted
+      register: windows_restart
+      retries: "{{ max_restart_attempts }}"
+      delay: "{{ health_check_delay }}"
+      until: windows_restart is succeeded
+      when: ansible_os_family == "Windows"
+
+    - name: Verify Linux print service is active
+      service_facts:
+      when: ansible_os_family != "Windows"
+
+    - name: Assert Linux print service running
+      assert:
+        that:
+          - services[print_service + '.service'].state == 'running'
+        fail_msg: "Print service {{ print_service }} is not running after restart."
+      when: ansible_os_family != "Windows"
+
+    - name: Verify Windows spooler running
+      win_service:
+        name: "{{ print_service }}"
+      register: windows_service_verify
+      when: ansible_os_family == "Windows"
+
+    - name: Assert Windows spooler is running
+      assert:
+        that:
+          - windows_service_verify.state == "running"
+        fail_msg: "Windows spooler service is not running after restart."
+      when: ansible_os_family == "Windows"
+
+    - name: Verify printer connectivity from Linux
+      wait_for:
+        host: "{{ printer"
+
+    - name: Verify printer connectivity from Linux
+      wait_for:
+        host: "{{ printer_ip }}"
+        port: 9100
+        timeout: "{{ health_check_delay }}"
+      register: printer_connectivity_linux
+      retries: "{{ max_restart_attempts }}"
+      delay: "{{ health_check_delay }}"
+      until: printer_connectivity_linux is succeeded
+      when: ansible_os_family != "Windows"
+
+    - name: Verify printer connectivity from Windows
+      win_shell: |
+        Test-NetConnection -ComputerName "{{ printer_ip }}" -Port 9100 | Select-Object -ExpandProperty TcpTestSucceeded
+      register: printer_connectivity_windows
+      retries: "{{ max_restart_attempts }}"
+      delay: "{{ health_check_delay }}"
+      until: "'True' in printer_connectivity_windows.stdout"
+      changed_when: false
+      when: ansible_os_family == "Windows"
+
+    - name: Send Linux test print
+      shell: "echo 'Ansible Printer Recovery Test' | lp -d {{ printer_name }}"
+      register: linux_test_print
+      failed_when: false
+      changed_when: true
+      when: ansible_os_family != "Windows"
+
+    - name: Send Windows test print
+      win_shell: |
+        $tmp = "$env:TEMP\\ansible_test $tmp = "$env:TEMP\\ansible_test_print.txt"
+        "Ansible Printer Recovery Test" | Out-File -FilePath $tmp
+        Start-Process -FilePath $tmp -Verb Print
+      register: windows_test_print
+      failed_when: false
+      changed_when: true
+      when: ansible_os_family == "Windows"
+
+    - name: Validate Linux queue is clear after recovery
+      shell: "lpstat -o {{ printer_name }}"
+      register: linux_queue_validation
+      failed_when: false
+      changed_when: false
+      when: ansible_os_family != "Windows"
+
+    - name: Fail if Linux queue still has stuck jobs
+      fail:
+        msg: "Print queue still contains jobs after recovery: {{ linux_queue_validation.stdout }}"
+      when:
+        - ansible_os_family != "Windows"
+        - linux_queue_validation.stdout | trim != ""
+
+    - name: Validate Windows queue is clear after recovery
+      win_shell: |
+        (Get-PrintJob -PrinterName "{{ printer_name }}" -ErrorAction SilentlyContinue).Count
+      register: windows_queue_validation
+      failed_when: false
+      changed_when: false
+      changed_when: false
+      when: ansible_os_family == "Windows"
+
+    - name: Fail if Windows queue still has jobs
+      fail:
+        msg: "Print queue still contains jobs after recovery."
+      when:
+        - ansible_os_family == "Windows"
+        - windows_queue_validation.stdout | int > 0
+
+    - name: Log successful recovery
+      lineinfile:
+        path: "{{ log_file }}"
+        line: "{{ ansible_date_time.iso8601 }} INFO Printer recovery completed successfully for {{ printer_name }}"
+        create: true
+      when: ansible_os_family != "Windows"
+
+    - name: Final recovery summary
+      debug:
+        msg:
+          - "Printer recovery completed."
+          - "Printer recovery completed."
+          - "Printer: {{ printer_name }}"
+          - "Printer IP: {{ printer_ip }}"
+          - "Print service: {{ print_service }}"
